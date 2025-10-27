@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Seguimiento de Transporte</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        #map {
+            height: 400px;
+            width: 100%;
+            border-radius: 0.5rem;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-blue-100 min-h-screen">
+    <div id="app"></div>
+
+    <script>
+        var appState = {
+            view: 'admin',
+            userType: 'admin',
+            trackingId: '',
+            newTracking: {
+                vehiculo: '',
+                chofer: '',
+                logoUrl: '',
+                horaInicio: '',
+                horaFin: ''
+            },
+            isTracking: false,
+            currentPosition: null,
+            routeHistory: [],
+            stops: [],
+            watchId: null,
+            mapObj: null,
+            marker: null,
+            routeLine: null,
+            stopMarkers: []
+        };
+
+        function generateTrackingId() {
+            return 'track_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        async function createTracking() {
+            if (!appState.newTracking.vehiculo || !appState.newTracking.chofer) {
+                alert('Por favor completa los campos de Vehículo y Chofer');
+                return;
+            }
+
+            var id = generateTrackingId();
+            var trackingData = {
+                vehiculo: appState.newTracking.vehiculo,
+                chofer: appState.newTracking.chofer,
+                logoUrl: appState.newTracking.logoUrl,
+                horaInicio: appState.newTracking.horaInicio,
+                horaFin: appState.newTracking.horaFin,
+                id: id,
+                createdAt: new Date().toISOString(),
+                routeHistory: [],
+                stops: [],
+                active: false
+            };
+
+            try {
+                await window.storage.set('tracking:' + id, JSON.stringify(trackingData), true);
+                appState.trackingId = id;
+                render();
+                alert('Seguimiento creado exitosamente!');
+            } catch (error) {
+                console.error('Error al crear seguimiento:', error);
+                alert('Error al crear el seguimiento. Por favor intenta de nuevo.');
+            }
+        }
+
+        async function saveTrackingData() {
+            if (!appState.trackingId) return;
+
+            try {
+                var result = await window.storage.get('tracking:' + appState.trackingId, true);
+                var data = result ? JSON.parse(result.value) : {};
+                
+                data.routeHistory = appState.routeHistory;
+                data.currentPosition = appState.currentPosition;
+                data.active = appState.isTracking;
+                data.stops = appState.stops;
+                data.lastUpdate = new Date().toISOString();
+                
+                await window.storage.set('tracking:' + appState.trackingId, JSON.stringify(data), true);
+            } catch (error) {
+                console.error('Error al guardar datos:', error);
+            }
+        }
+
+        async function loadTrackingData() {
+            if (!appState.trackingId) return;
+
+            try {
+                var result = await window.storage.get('tracking:' + appState.trackingId, true);
+                if (result && result.value) {
+                    var data = JSON.parse(result.value);
+                    if (data.id) {
+                        appState.newTracking = {
+                            vehiculo: data.vehiculo || '',
+                            chofer: data.chofer || '',
+                            logoUrl: data.logoUrl || '',
+                            horaInicio: data.horaInicio || '',
+                            horaFin: data.horaFin || ''
+                        };
+                        appState.routeHistory = data.routeHistory || [];
+                        appState.stops = data.stops || [];
+                        appState.currentPosition = data.currentPosition || null;
+                        appState.isTracking = data.active || false;
+                    }
+                }
+            } catch (error) {
+                console.error('Error al cargar datos:', error);
+            }
+        }
+
+        function initMap() {
+            setTimeout(function() {
+                if (document.getElementById('map') && !appState.mapObj) {
+                    appState.mapObj = L.map('map').setView([-34.6037, -58.3816], 13);
+                    
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '© OpenStreetMap'
+                    }).addTo(appState.mapObj);
+
+                    if (appState.currentPosition) {
+                        updateMap();
+                    }
+                }
+            }, 100);
+        }
+
+        function updateMap() {
+            if (!appState.mapObj) return;
+
+            if (appState.currentPosition) {
+                var lat = appState.currentPosition.lat;
+                var lng = appState.currentPosition.lng;
+
+                if (appState.marker) {
+                    appState.marker.setLatLng([lat, lng]);
+                } else {
+                    var truckIcon = L.divIcon({
+                        html: '<div style="font-size: 30px;">🚛</div>',
+                        className: 'truck-marker',
+                        iconSize: [30, 30]
+                    });
+                    appState.marker = L.marker([lat, lng], {icon: truckIcon}).addTo(appState.mapObj);
+                }
+
+                appState.mapObj.setView([lat, lng], 15);
+            }
+
+            if (appState.routeHistory.length > 1) {
+                var routeCoords = [];
+                for (var i = 0; i < appState.routeHistory.length; i++) {
+                    routeCoords.push([appState.routeHistory[i].lat, appState.routeHistory[i].lng]);
+                }
+
+                if (appState.routeLine) {
+                    appState.routeLine.setLatLngs(routeCoords);
+                } else {
+                    appState.routeLine = L.polyline(routeCoords, {
+                        color: 'blue',
+                        weight: 4,
+                        opacity: 0.7
+                    }).addTo(appState.mapObj);
+                }
+            }
+
+            for (var i = 0; i < appState.stopMarkers.length; i++) {
+                appState.mapObj.removeLayer(appState.stopMarkers[i]);
+            }
+            appState.stopMarkers = [];
+
+            for (var i = 0; i < appState.stops.length; i++) {
+                if (appState.stops[i].position) {
+                    var stopIcon = L.divIcon({
+                        html: '<div style="background: red; color: white; border-radius: 50%; width: 25px; height: 25px; display: flex; align-items: center; justify-content: center; font-weight: bold;">' + (i + 1) + '</div>',
+                        className: 'stop-marker',
+                        iconSize: [25, 25]
+                    });
+                    var stopMarker = L.marker([appState.stops[i].position.lat, appState.stops[i].position.lng], {icon: stopIcon})
+                        .addTo(appState.mapObj)
+                        .bindPopup('Parada ' + (i + 1));
+                    appState.stopMarkers.push(stopMarker);
+                }
+            }
+        }
+
+        function toggleTracking() {
+            appState.isTracking = !appState.isTracking;
+
+            if (appState.isTracking) {
+                if (navigator.geolocation) {
+                    appState.watchId = navigator.geolocation.watchPosition(
+                        function(position) {
+                            var newPos = {
+                                lat: position.coords.latitude,
+                                lng: position.coords.longitude,
+                                timestamp: new Date().toISOString()
+                            };
+                            appState.currentPosition = newPos;
+                            appState.routeHistory.push(newPos);
+                            saveTrackingData();
+                            updateMap();
+                            render();
+                        },
+                        function(error) {
+                            console.error('Error:', error);
+                            alert('Error al obtener la ubicación. Asegúrate de haber dado permisos.');
+                        },
+                        {
+                            enableHighAccuracy: true,
+                            timeout: 5000,
+                            maximumAge: 0
+                        }
+                    );
+                } else {
+                    alert('Tu navegador no soporta geolocalización');
+                    appState.isTracking = false;
+                }
+            } else {
+                if (appState.watchId) {
+                    navigator.geolocation.clearWatch(appState.watchId);
+                    appState.watchId = null;
+                }
+            }
+
+            saveTrackingData();
+            render();
+        }
+
+        function addStop() {
+            var stop = {
+                position: appState.currentPosition,
+                timestamp: new Date().toISOString(),
+                duration: 0
+            };
+            appState.stops.push(stop);
+            saveTrackingData();
+            updateMap();
+            render();
+        }
+
+        function getDriverLink() {
+            var baseUrl = window.location.origin + window.location.pathname;
+            // Si estamos en un artifact, mostrar instrucciones
+            if (baseUrl.includes('srcdoc') || baseUrl.includes('null')) {
+                return '[DEBES SUBIR ESTE CÓDIGO A UN SERVIDOR - Ver instrucciones]';
+            }
+            return baseUrl + '?tracking=' + appState.trackingId + '&type=driver';
+        }
+
+        function getClientLink() {
+            var baseUrl = window.location.origin + window.location.pathname;
+            // Si estamos en un artifact, mostrar instrucciones
+            if (baseUrl.includes('srcdoc') || baseUrl.includes('null')) {
+                return '[DEBES SUBIR ESTE CÓDIGO A UN SERVIDOR - Ver instrucciones]';
+            }
+            return baseUrl + '?tracking=' + appState.trackingId + '&type=client';
+        }
+
+        function copyDriverLink() {
+            var link = getDriverLink();
+            if (link.includes('DEBES SUBIR')) {
+                alert('⚠️ IMPORTANTE:\n\nPara que los links funcionen, debes:\n\n1. Copiar TODO este código HTML\n2. Subirlo a GitHub Pages, Netlify o cualquier hosting\n3. Usar la URL real de tu sitio\n\nLos links solo funcionan cuando el código está en un servidor web público.');
+                return;
+            }
+            navigator.clipboard.writeText(link).then(function() {
+                alert('Link del CHOFER copiado!\n\nEnvía este link al chofer por WhatsApp.\n\n' + link);
+            });
+        }
+
+        function copyClientLink() {
+            var link = getClientLink();
+            if (link.includes('DEBES SUBIR')) {
+                alert('⚠️ IMPORTANTE:\n\nPara que los links funcionen, debes:\n\n1. Copiar TODO este código HTML\n2. Subirlo a GitHub Pages, Netlify o cualquier hosting\n3. Usar la URL real de tu sitio\n\nLos links solo funcionan cuando el código está en un servidor web público.');
+                return;
+            }
+            navigator.clipboard.writeText(link).then(function() {
+                alert('Link del CLIENTE copiado!\n\nEnvía este link al cliente por WhatsApp.\n\n' + link);
+            });
+        }
+
+        function formatTime(isoString) {
+            var date = new Date(isoString);
+            return date.toLocaleTimeString('es-AR');
+        }
+
+        function handleCreateTracking() {
+            appState.newTracking.vehiculo = document.getElementById('vehiculo').value;
+            appState.newTracking.chofer = document.getElementById('chofer').value;
+            appState.newTracking.logoUrl = document.getElementById('logoUrl').value;
+            appState.newTracking.horaInicio = document.getElementById('horaInicio').value;
+            appState.newTracking.horaFin = document.getElementById('horaFin').value;
+            createTracking();
+        }
+
+        async function goToDriverView() {
+            appState.userType = 'driver';
+            appState.view = 'tracking';
+            await loadTrackingData();
+            render();
+            initMap();
+        }
+
+        async function goToClientView() {
+            appState.userType = 'client';
+            appState.view = 'tracking';
+            await loadTrackingData();
+            render();
+            initMap();
+        }
+
+        function goToAdmin() {
+            appState.view = 'admin';
+            appState.userType = 'admin';
+            window.history.pushState({}, '', window.location.pathname);
+            render();
+        }
+
+        function render() {
+            var app = document.getElementById('app');
+            var html = '';
+
+            if (appState.view === 'admin') {
+                if (!appState.trackingId) {
+                    html = '<div class="max-w-4xl mx-auto p-4"><div class="bg-white rounded-lg shadow-lg p-6">' +
+                        '<h1 class="text-3xl font-bold text-blue-900 mb-6">🚛 Panel de Administración</h1>' +
+                        '<h2 class="text-xl font-semibold text-gray-700 mb-4">Crear Nuevo Seguimiento</h2>' +
+                        '<div class="space-y-4">' +
+                        '<div><label class="block text-sm font-medium text-gray-700 mb-1">Vehículo *</label>' +
+                        '<input type="text" id="vehiculo" placeholder="Ej: Camión Mercedes Benz - ABC123" class="w-full px-4 py-2 border border-gray-300 rounded-lg"></div>' +
+                        '<div><label class="block text-sm font-medium text-gray-700 mb-1">Chofer *</label>' +
+                        '<input type="text" id="chofer" placeholder="Ej: Juan Pérez" class="w-full px-4 py-2 border border-gray-300 rounded-lg"></div>' +
+                        '<div><label class="block text-sm font-medium text-gray-700 mb-1">URL del Logo (opcional)</label>' +
+                        '<input type="text" id="logoUrl" placeholder="https://ejemplo.com/logo.png" class="w-full px-4 py-2 border border-gray-300 rounded-lg"></div>' +
+                        '<div class="grid grid-cols-2 gap-4">' +
+                        '<div><label class="block text-sm font-medium text-gray-700 mb-1">Hora Inicio</label>' +
+                        '<input type="time" id="horaInicio" class="w-full px-4 py-2 border border-gray-300 rounded-lg"></div>' +
+                        '<div><label class="block text-sm font-medium text-gray-700 mb-1">Hora Fin</label>' +
+                        '<input type="time" id="horaFin" class="w-full px-4 py-2 border border-gray-300 rounded-lg"></div>' +
+                        '</div>' +
+                        '<button onclick="handleCreateTracking()" class="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700">Crear Seguimiento</button>' +
+                        '</div></div></div>';
+                } else {
+                    html = '<div class="max-w-4xl mx-auto p-4"><div class="bg-white rounded-lg shadow-lg p-6">' +
+                        '<h1 class="text-3xl font-bold text-blue-900 mb-6">🚛 Panel de Administración</h1>' +
+                        '<div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">' +
+                        '<h3 class="font-semibold text-green-900 mb-3">✅ Seguimiento Creado</h3>' +
+                        '<p class="text-sm text-green-700 mb-4">ID: ' + appState.trackingId + '</p>' +
+                        '<div class="space-y-3">' +
+                        '<div class="bg-white rounded-lg p-3 border border-green-300">' +
+                        '<div class="flex items-center justify-between mb-2"><span class="font-semibold text-gray-900">🚗 Link para el CHOFER</span></div>' +
+                        '<p class="text-xs text-gray-600 mb-2">El chofer usa este link para activar GPS y registrar paradas</p>' +
+                        '<button onclick="copyDriverLink()" class="w-full bg-orange-600 text-white py-2 rounded-lg font-semibold hover:bg-orange-700">📤 Copiar Link del Chofer</button>' +
+                        '</div>' +
+                        '<div class="bg-white rounded-lg p-3 border border-green-300">' +
+                        '<div class="flex items-center justify-between mb-2"><span class="font-semibold text-gray-900">👤 Link para el CLIENTE</span></div>' +
+                        '<p class="text-xs text-gray-600 mb-2">El cliente usa este link solo para VER el seguimiento</p>' +
+                        '<button onclick="copyClientLink()" class="w-full bg-green-600 text-white py-2 rounded-lg font-semibold hover:bg-green-700">📤 Copiar Link del Cliente</button>' +
+                        '</div></div></div>' +
+                        '<div class="flex gap-2">' +
+                        '<button onclick="goToDriverView()" class="flex-1 bg-orange-600 text-white py-2 rounded-lg font-semibold hover:bg-orange-700">👁️ Vista Chofer</button>' +
+                        '<button onclick="goToClientView()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700">👁️ Vista Cliente</button>' +
+                        '</div></div></div>';
+                }
+            } else if (appState.userType === 'driver') {
+                var logo = appState.newTracking.logoUrl ? '<div class="bg-blue-900 p-6 flex justify-center"><img src="' + appState.newTracking.logoUrl + '" alt="Logo" class="h-16 object-contain"></div>' : '';
+                var mapDiv = appState.currentPosition ? '<div class="mb-4"><h3 class="font-semibold text-gray-900 mb-2">📍 Tu Ubicación</h3><div id="map"></div></div>' : '';
+                var posInfo = appState.currentPosition ? '<div class="bg-gray-50 rounded-lg p-4 mb-4"><p class="text-sm text-gray-600">Posición:</p><p class="font-mono text-sm">Lat: ' + appState.currentPosition.lat.toFixed(6) + ', Lng: ' + appState.currentPosition.lng.toFixed(6) + '</p><p class="text-xs text-gray-500 mt-1">' + formatTime(appState.currentPosition.timestamp) + '</p></div>' : '';
+                var stopBtn = appState.isTracking ? '<button onclick="addStop()" class="bg-yellow-600 text-white py-3 px-6 rounded-lg font-semibold hover:bg-yellow-700">📍 Registrar Parada</button>' : '';
+                
+                html = '<div class="max-w-4xl mx-auto p-4"><div class="bg-white rounded-lg shadow-lg overflow-hidden">' + logo +
+                    '<div class="p-6"><h1 class="text-2xl font-bold text-gray-900 mb-6">🚗 Panel del Chofer</h1>' +
+                    '<div class="bg-orange-50 rounded-lg p-4 mb-4"><p class="font-semibold">Vehículo: ' + appState.newTracking.vehiculo + '</p><p class="text-sm">Chofer: ' + appState.newTracking.chofer + '</p></div>' +
+                    '<div class="flex gap-2 mb-4">' +
+                    '<button onclick="toggleTracking()" class="flex-1 py-4 rounded-lg font-semibold text-lg ' + (appState.isTracking ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700') + ' text-white">' +
+                    (appState.isTracking ? '⏸️ Detener' : '▶️ Iniciar') + '</button>' + stopBtn +
+                    '</div>' + posInfo + mapDiv +
+                    '</div></div><div class="mt-4 text-center"><button onclick="goToAdmin()" class="text-blue-600 hover:text-blue-800 text-sm font-medium">← Volver</button></div></div>';
+            } else {
+                var logo = appState.newTracking.logoUrl ? '<div class="bg-blue-900 p-6 flex justify-center"><img src="' + appState.newTracking.logoUrl + '" alt="Logo" class="h-16 object-contain"></div>' : '';
+                var mapDiv = appState.currentPosition ? '<div class="mb-4"><h3 class="font-semibold text-gray-900 mb-2">📍 Ubicación en Tiempo Real</h3><div id="map"></div></div>' : '';
+                var status = appState.currentPosition ? '<div class="bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg p-4 mb-4"><div class="flex items-center gap-2 mb-2"><span class="text-2xl">📍</span><span class="font-semibold text-lg">En Tránsito</span></div><p class="text-sm opacity-90">Última actualización: ' + formatTime(appState.currentPosition.timestamp) + '</p></div>' : '<div class="bg-gray-50 border border-gray-200 rounded-lg p-8 text-center"><div class="text-6xl mb-4">🚛</div><p class="text-gray-600">El seguimiento aún no ha comenzado</p></div>';
+                
+                html = '<div class="max-w-4xl mx-auto p-4"><div class="bg-white rounded-lg shadow-lg overflow-hidden">' + logo +
+                    '<div class="p-6"><h1 class="text-2xl font-bold text-gray-900 mb-6">Seguimiento de Envío</h1>' +
+                    '<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">' +
+                    '<div class="bg-blue-50 rounded-lg p-4"><div class="flex items-center gap-2 text-blue-900 mb-2"><span class="text-xl">🚛</span><span class="font-semibold">Vehículo</span></div><p class="text-gray-700">' + appState.newTracking.vehiculo + '</p></div>' +
+                    '<div class="bg-green-50 rounded-lg p-4"><div class="flex items-center gap-2 text-green-900 mb-2"><span class="text-xl">👤</span><span class="font-semibold">Chofer</span></div><p class="text-gray-700">' + appState.newTracking.chofer + '</p></div>' +
+                    '</div>' + status + mapDiv +
+                    '</div></div><div class="mt-4 text-center"><button onclick="goToAdmin()" class="text-blue-600 hover:text-blue-800 text-sm font-medium">← Volver</button></div></div>';
+            }
+
+            app.innerHTML = html;
+            
+            if (appState.currentPosition && appState.view !== 'admin') {
+                initMap();
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', async function() {
+            var params = new URLSearchParams(window.location.search);
+            var urlTrackingId = params.get('tracking');
+            var urlType = params.get('type');
+            
+            if (urlTrackingId) {
+                appState.trackingId = urlTrackingId;
+                appState.view = 'tracking';
+                appState.userType = urlType || 'client';
+                await loadTrackingData();
+            }
+            
+            render();
+            
+            if (appState.view !== 'admin') {
+                setInterval(async function() {
+                    await loadTrackingData();
+                    updateMap();
+                    if (appState.userType === 'client') {
+                        render();
+                    }
+                }, 5000);
+            }
+        });
+    </script>
+</body>
+</html>
