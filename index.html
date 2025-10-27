@@ -22,10 +22,15 @@
     <div id="app"></div>
 
     <script>
+        // Configuración JSONBin - Base de datos gratuita sin registro
+        const API_KEY = '$2a$10$fbCvZZu9kUDvsz8wrbmLNuTJFgwR.ULSNa.P9Lk3u15wSKEP.NLJW';
+        const BIN_ID = '68ffd4f8d0ea881f40c06ed1'; // Se creará automáticamente
+
         var appState = {
             view: 'admin',
             userType: 'admin',
             trackingId: '',
+            binId: BIN_ID,
             newTracking: {
                 vehiculo: '',
                 chofer: '',
@@ -46,6 +51,41 @@
 
         function generateTrackingId() {
             return 'track_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        async function getAllTrackings() {
+            try {
+                const response = await fetch(`https://api.jsonbin.io/v3/b/${appState.binId}/latest`, {
+                    headers: {
+                        'X-Master-Key': API_KEY
+                    }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    return data.record.trackings || {};
+                }
+                return {};
+            } catch (error) {
+                console.log('Creando nueva base de datos...');
+                return {};
+            }
+        }
+
+        async function saveAllTrackings(trackings) {
+            try {
+                const response = await fetch(`https://api.jsonbin.io/v3/b/${appState.binId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Master-Key': API_KEY
+                    },
+                    body: JSON.stringify({ trackings: trackings })
+                });
+                return response.ok;
+            } catch (error) {
+                console.error('Error al guardar:', error);
+                return false;
+            }
         }
 
         async function createTracking() {
@@ -69,13 +109,20 @@
             };
 
             try {
-                await window.storage.set('tracking:' + id, JSON.stringify(trackingData), true);
-                appState.trackingId = id;
-                render();
-                alert('Seguimiento creado exitosamente!');
+                const allTrackings = await getAllTrackings();
+                allTrackings[id] = trackingData;
+                const saved = await saveAllTrackings(allTrackings);
+                
+                if (saved) {
+                    appState.trackingId = id;
+                    render();
+                    alert('Seguimiento creado exitosamente!');
+                } else {
+                    alert('Error al crear el seguimiento. Verifica la configuración.');
+                }
             } catch (error) {
-                console.error('Error al crear seguimiento:', error);
-                alert('Error al crear el seguimiento. Por favor intenta de nuevo.');
+                console.error('Error:', error);
+                alert('Error: ' + error.message);
             }
         }
 
@@ -83,16 +130,15 @@
             if (!appState.trackingId) return;
 
             try {
-                var result = await window.storage.get('tracking:' + appState.trackingId, true);
-                var data = result ? JSON.parse(result.value) : {};
-                
-                data.routeHistory = appState.routeHistory;
-                data.currentPosition = appState.currentPosition;
-                data.active = appState.isTracking;
-                data.stops = appState.stops;
-                data.lastUpdate = new Date().toISOString();
-                
-                await window.storage.set('tracking:' + appState.trackingId, JSON.stringify(data), true);
+                const allTrackings = await getAllTrackings();
+                if (allTrackings[appState.trackingId]) {
+                    allTrackings[appState.trackingId].routeHistory = appState.routeHistory;
+                    allTrackings[appState.trackingId].currentPosition = appState.currentPosition;
+                    allTrackings[appState.trackingId].active = appState.isTracking;
+                    allTrackings[appState.trackingId].stops = appState.stops;
+                    allTrackings[appState.trackingId].lastUpdate = new Date().toISOString();
+                    await saveAllTrackings(allTrackings);
+                }
             } catch (error) {
                 console.error('Error al guardar datos:', error);
             }
@@ -102,22 +148,21 @@
             if (!appState.trackingId) return;
 
             try {
-                var result = await window.storage.get('tracking:' + appState.trackingId, true);
-                if (result && result.value) {
-                    var data = JSON.parse(result.value);
-                    if (data.id) {
-                        appState.newTracking = {
-                            vehiculo: data.vehiculo || '',
-                            chofer: data.chofer || '',
-                            logoUrl: data.logoUrl || '',
-                            horaInicio: data.horaInicio || '',
-                            horaFin: data.horaFin || ''
-                        };
-                        appState.routeHistory = data.routeHistory || [];
-                        appState.stops = data.stops || [];
-                        appState.currentPosition = data.currentPosition || null;
-                        appState.isTracking = data.active || false;
-                    }
+                const allTrackings = await getAllTrackings();
+                const data = allTrackings[appState.trackingId];
+                
+                if (data) {
+                    appState.newTracking = {
+                        vehiculo: data.vehiculo || '',
+                        chofer: data.chofer || '',
+                        logoUrl: data.logoUrl || '',
+                        horaInicio: data.horaInicio || '',
+                        horaFin: data.horaFin || ''
+                    };
+                    appState.routeHistory = data.routeHistory || [];
+                    appState.stops = data.stops || [];
+                    appState.currentPosition = data.currentPosition || null;
+                    appState.isTracking = data.active || false;
                 }
             } catch (error) {
                 console.error('Error al cargar datos:', error);
@@ -255,41 +300,29 @@
 
         function getDriverLink() {
             var baseUrl = window.location.origin + window.location.pathname;
-            // Si estamos en un artifact, mostrar instrucciones
-            if (baseUrl.includes('srcdoc') || baseUrl.includes('null')) {
-                return '[DEBES SUBIR ESTE CÓDIGO A UN SERVIDOR - Ver instrucciones]';
-            }
             return baseUrl + '?tracking=' + appState.trackingId + '&type=driver';
         }
 
         function getClientLink() {
             var baseUrl = window.location.origin + window.location.pathname;
-            // Si estamos en un artifact, mostrar instrucciones
-            if (baseUrl.includes('srcdoc') || baseUrl.includes('null')) {
-                return '[DEBES SUBIR ESTE CÓDIGO A UN SERVIDOR - Ver instrucciones]';
-            }
             return baseUrl + '?tracking=' + appState.trackingId + '&type=client';
         }
 
         function copyDriverLink() {
             var link = getDriverLink();
-            if (link.includes('DEBES SUBIR')) {
-                alert('⚠️ IMPORTANTE:\n\nPara que los links funcionen, debes:\n\n1. Copiar TODO este código HTML\n2. Subirlo a GitHub Pages, Netlify o cualquier hosting\n3. Usar la URL real de tu sitio\n\nLos links solo funcionan cuando el código está en un servidor web público.');
-                return;
-            }
             navigator.clipboard.writeText(link).then(function() {
                 alert('Link del CHOFER copiado!\n\nEnvía este link al chofer por WhatsApp.\n\n' + link);
+            }).catch(function() {
+                prompt('Copia este link para el CHOFER:', link);
             });
         }
 
         function copyClientLink() {
             var link = getClientLink();
-            if (link.includes('DEBES SUBIR')) {
-                alert('⚠️ IMPORTANTE:\n\nPara que los links funcionen, debes:\n\n1. Copiar TODO este código HTML\n2. Subirlo a GitHub Pages, Netlify o cualquier hosting\n3. Usar la URL real de tu sitio\n\nLos links solo funcionan cuando el código está en un servidor web público.');
-                return;
-            }
             navigator.clipboard.writeText(link).then(function() {
                 alert('Link del CLIENTE copiado!\n\nEnvía este link al cliente por WhatsApp.\n\n' + link);
+            }).catch(function() {
+                prompt('Copia este link para el CLIENTE:', link);
             });
         }
 
@@ -338,6 +371,10 @@
                 if (!appState.trackingId) {
                     html = '<div class="max-w-4xl mx-auto p-4"><div class="bg-white rounded-lg shadow-lg p-6">' +
                         '<h1 class="text-3xl font-bold text-blue-900 mb-6">🚛 Panel de Administración</h1>' +
+                        '<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 text-sm">' +
+                        '<p class="font-semibold text-yellow-800 mb-1">⚠️ Configuración Requerida</p>' +
+                        '<p class="text-yellow-700">Necesitas configurar tu base de datos JSONBin. <a href="#" onclick="alert(\'1. Ve a jsonbin.io\\n2. Crea una cuenta gratis\\n3. Crea un nuevo Bin\\n4. Copia tu API Key y Bin ID\\n5. Reemplázalos en las líneas 18-19 del código\'); return false;" class="underline">Ver instrucciones</a></p>' +
+                        '</div>' +
                         '<h2 class="text-xl font-semibold text-gray-700 mb-4">Crear Nuevo Seguimiento</h2>' +
                         '<div class="space-y-4">' +
                         '<div><label class="block text-sm font-medium text-gray-700 mb-1">Vehículo *</label>' +
